@@ -8,31 +8,31 @@
 :root{--bg:#f5f6f8;--ink:#1b1e24;--mut:#656b76;--line:#d9dce2;color-scheme:light dark}
 @media (prefers-color-scheme:dark){:root{--bg:#14161a;--ink:#e6e8ec;--mut:#98a0ac;--line:#2a2e35}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
 main{max-width:920px;margin:0 auto;padding:24px 16px 64px}
-header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:24px}
-h1{font-size:24px;margin:0;font-weight:700;letter-spacing:-.02em}
+header{display:flex;gap:8px;align-items:center;margin-bottom:24px}
+h1{font-size:24px;margin:0 auto 0 0;font-weight:700;letter-spacing:-.02em}
 select,input,button{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
 button{cursor:pointer}
 button.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 :focus-visible{outline:2px solid var(--ink);outline-offset:2px}
-form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:40px}
+form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:32px}
 label{display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--mut)}
-label[hidden]{display:none}
 #err{background:color-mix(in srgb,#d33 14%,var(--bg));border:1px solid #d33;border-radius:6px;padding:8px 12px;margin:0 0 20px}
 .area{margin-bottom:36px}
 .area h2{font-size:17px;margin:0;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .area h2 span{color:var(--mut);font-weight:400;font-size:13px}
 .sw{width:10px;height:10px;border-radius:50%;background:var(--c);align-self:center}
 .scroll{overflow-x:auto;padding:6px 0 8px}
-.months{position:relative;height:16px;width:795px;font-size:12px;color:var(--mut)}
+.months{position:relative;height:16px;font-size:12px;color:var(--mut)}
 .months span{position:absolute;top:0}
 .grid{display:grid;grid-template-rows:repeat(7,12px);grid-auto-flow:column;grid-auto-columns:12px;gap:3px;width:max-content}
 .d{width:12px;height:12px;padding:0;border:0;border-radius:3px;background:color-mix(in srgb,var(--ink) 9%,var(--bg))}
-.n1{background:color-mix(in srgb,var(--c) 30%,var(--bg))}
-.n2{background:color-mix(in srgb,var(--c) 52%,var(--bg))}
-.n3{background:color-mix(in srgb,var(--c) 76%,var(--bg))}
-.n4{background:var(--c)}
+.d[data-level="1"]{background:color-mix(in srgb,var(--c) 30%,var(--bg))}
+.d[data-level="2"]{background:color-mix(in srgb,var(--c) 52%,var(--bg))}
+.d[data-level="3"]{background:color-mix(in srgb,var(--c) 76%,var(--bg))}
+.d[data-level="4"]{background:var(--c)}
 .d.sel{outline:2px solid var(--ink);outline-offset:1px}
 .det{margin-top:8px;font-size:14px}
 .det .ev{display:flex;gap:10px;align-items:center;padding:2px 0}
@@ -45,8 +45,14 @@ label[hidden]{display:none}
 <main>
   <header>
     <h1>Hábitos</h1>
-    <select id="ano" aria-label="Ano"></select>
+    <select id="ano" aria-label="Período"></select>
+    <button id="sair" type="button">Trocar token</button>
   </header>
+
+  <form id="login" hidden>
+    <label>Token deste dispositivo <input id="tk" type="password" autocomplete="off" required style="width:22em;max-width:100%"></label>
+    <button class="primary" type="submit">Entrar</button>
+  </form>
 
   <form id="f">
     <label>Área <select id="area"></select></label>
@@ -64,10 +70,10 @@ label[hidden]{display:none}
 <script>
 const $ = s => document.querySelector(s);
 const pad = n => String(n).padStart(2, '0');
-const hojeISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const fmtN = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 const fmtD = iso => new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
 const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+const TOKEN_KEY = 'habitos_token';
 
 function el(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
@@ -81,21 +87,30 @@ function el(tag, props = {}, ...kids) {
   return e;
 }
 
-async function api(path, opts) {
-  const r = await fetch(path, opts);
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  const t = localStorage.getItem(TOKEN_KEY);
+  if (t) headers.Authorization = 'Bearer ' + t;
+  const r = await fetch(path, { ...opts, headers });
   if (!r.ok) {
     let m = r.statusText;
     try { const j = await r.json(); m = typeof j.detail === 'string' ? j.detail : 'Dados inválidos.'; } catch {}
-    throw new Error(m);
+    const e = new Error(m); e.status = r.status; throw e;
   }
   return r.status === 204 ? null : r.json();
 }
 
 const erro = m => { const e = $('#err'); e.textContent = m || ''; e.hidden = !m; };
+function falha(e) {
+  if (e.status === 401) $('#login').hidden = false;
+  erro(e.message);
+}
 
-let ano = new Date().getFullYear();
+let ano = null;       // null = últimos 12 meses (termina hoje)
+let hoje = '';        // dia atual no fuso do servidor
+let janela = { inicio: '', fim: '' };
 let cals = [];
-let sel = null; // { area, data }
+let sel = null;       // { area, data }
 
 function rotulo(a, d) {
   if (!d.contagem) return `${fmtD(d.data)}: sem registro`;
@@ -103,18 +118,15 @@ function rotulo(a, d) {
 }
 
 function opcoesAno() {
-  const atual = new Date().getFullYear();
-  const s = $('#ano');
-  s.replaceChildren();
-  for (let y = Math.max(atual, ano); y >= Math.min(atual - 4, ano); y--) {
-    s.append(el('option', { value: y, text: y }));
-  }
-  s.value = ano;
+  const s = $('#ano'), y0 = Number(hoje.slice(0, 4));
+  s.replaceChildren(el('option', { value: '', text: 'Últimos 12 meses' }));
+  for (let y = y0; y >= y0 - 4; y--) s.append(el('option', { value: y, text: y }));
+  if (ano && ano < y0 - 4) s.append(el('option', { value: ano, text: ano }));
+  s.value = ano || '';
 }
 
 function opcoesArea() {
-  const s = $('#area');
-  const atual = s.value;
+  const s = $('#area'), atual = s.value;
   s.replaceChildren(...cals.map(c => el('option', { value: c.area.id, text: c.area.nome })));
   if (atual) s.value = atual;
   atualizarForm();
@@ -136,7 +148,7 @@ function atualizarForm() {
 async function detalhe(a, data, box) {
   box.replaceChildren(el('strong', { text: fmtD(data) }));
   try {
-    const ev = (await api(`/eventos?area_id=${a.id}&ano=${ano}`)).filter(e => e.data === data);
+    const ev = await api(`/api/eventos?area_id=${a.id}&de=${data}&ate=${data}`);
     if (!ev.length) { box.append(el('div', { class: 'mut', text: 'Nenhum registro neste dia.' })); return; }
     for (const e of ev) {
       const txt = (a.unidade ? `${fmtN(e.valor)} ${a.unidade}` : 'feito') + (e.nota ? `: ${e.nota}` : '');
@@ -144,24 +156,27 @@ async function detalhe(a, data, box) {
         el('span', { text: txt }),
         el('button', { type: 'button', text: 'Remover', onclick: () => remover(e.id) })));
     }
-  } catch (x) { erro(x.message); }
+  } catch (x) { falha(x); }
 }
 
 function secao(c) {
-  const a = c.area, dias = c.dias, off = new Date(c.ano, 0, 1).getDay();
+  const a = c.area, dias = c.dias;
+  const off = new Date(janela.inicio + 'T12:00:00').getDay();   // 0 = domingo
+  const cols = Math.ceil((off + dias.length) / 7);
   const ativos = dias.filter(d => d.contagem).length;
   const total = dias.reduce((s, d) => s + d.total, 0);
   const resumo = `${ativos} ${ativos === 1 ? 'dia' : 'dias'}` + (a.unidade ? `, ${fmtN(total)} ${a.unidade}` : '');
 
-  const meses = el('div', { class: 'months' });
-  MESES.forEach((m, i) => {
-    const idx = dias.findIndex(d => d.data.slice(5) === `${pad(i + 1)}-01`);
-    meses.append(el('span', { text: m, style: `left:${Math.floor((off + idx) / 7) * 15}px` }));
+  const meses = el('div', { class: 'months', style: `width:${cols * 15}px` });
+  dias.forEach((d, i) => {
+    if (d.data.slice(8) === '01') {
+      meses.append(el('span', { text: MESES[Number(d.data.slice(5, 7)) - 1], style: `left:${Math.floor((off + i) / 7) * 15}px` }));
+    }
   });
 
   const grid = el('div', { class: 'grid' });
   dias.forEach((d, i) => {
-    const b = el('button', { type: 'button', class: `d n${d.nivel}`, 'data-i': i, 'aria-label': rotulo(a, d) });
+    const b = el('button', { type: 'button', class: 'd', 'data-level': d.nivel, 'data-i': i, 'aria-label': rotulo(a, d) });
     if (i === 0) b.style.gridRowStart = off + 1;
     if (sel && sel.area === a.id && sel.data === d.data) b.classList.add('sel');
     grid.append(b);
@@ -169,7 +184,7 @@ function secao(c) {
 
   const det = el('div', { class: 'det' });
   const diaDe = t => { const b = t.closest('.d'); return b ? { b, d: dias[b.dataset.i] } : null; };
-  const mostrar = (t) => {
+  const mostrar = t => {
     const x = diaDe(t); if (!x) return;
     const r = x.b.getBoundingClientRect(), tip = $('#tip');
     tip.textContent = rotulo(a, x.d);
@@ -204,26 +219,47 @@ function render() {
   const box = $('#areas');
   if (!cals.length) { box.replaceChildren(el('p', { class: 'mut', text: 'Nenhuma área cadastrada.' })); return; }
   box.replaceChildren(...cals.map(secao));
-  const atual = ano === new Date().getFullYear();
-  document.querySelectorAll('.scroll').forEach(s => { s.scrollLeft = atual ? s.scrollWidth : 0; });
+  document.querySelectorAll('.scroll').forEach(s => { s.scrollLeft = s.scrollWidth; });  // mostra o dia atual
 }
 
 async function load() {
   try {
-    cals = await api(`/calendarios?ano=${ano}`);
-    erro('');
+    const r = await api('/api/calendarios' + (ano ? `?ano=${ano}` : ''));
+    cals = r.areas; hoje = r.hoje; janela = { inicio: r.inicio, fim: r.fim };
+    erro(''); $('#login').hidden = true;
+    const d = $('#data');
+    d.max = hoje;
+    if (!d.value || d.value > hoje) d.value = hoje;
     opcoesAno(); opcoesArea(); render();
-  } catch (e) { erro(e.message); }
+  } catch (e) { falha(e); }
 }
 
 async function remover(id) {
   if (!confirm('Remover este registro?')) return;
-  try { await api(`/eventos/${id}`, { method: 'DELETE' }); await load(); }
-  catch (e) { erro(e.message); }
+  try { await api(`/api/eventos/${id}`, { method: 'DELETE' }); await load(); }
+  catch (e) { falha(e); }
 }
 
-$('#ano').addEventListener('change', e => { ano = Number(e.target.value); sel = null; load(); });
+// Vira o dia (no fuso do servidor): recarrega para o calendário avançar até o novo "hoje".
+async function checarDia() {
+  try { const r = await api('/api/hoje'); if (hoje && r.hoje !== hoje) load(); } catch {}
+}
+setInterval(checarDia, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checarDia(); });
+
+$('#ano').addEventListener('change', e => { ano = e.target.value ? Number(e.target.value) : null; sel = null; load(); });
 $('#area').addEventListener('change', atualizarForm);
+$('#login').addEventListener('submit', ev => {
+  ev.preventDefault();
+  localStorage.setItem(TOKEN_KEY, $('#tk').value.trim());
+  $('#tk').value = '';
+  load();
+});
+$('#sair').addEventListener('click', () => {
+  localStorage.removeItem(TOKEN_KEY);
+  cals = []; render();
+  $('#login').hidden = false; $('#tk').focus();
+});
 $('#f').addEventListener('submit', async ev => {
   ev.preventDefault();
   const a = areaSelecionada(); if (!a) return;
@@ -236,15 +272,14 @@ $('#f').addEventListener('submit', async ev => {
   const nota = $('#nota').value.trim();
   if (nota) body.nota = nota;
   try {
-    await api('/eventos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    await api('/api/eventos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     $('#valor').value = ''; $('#nota').value = '';
-    ano = Number(body.data.slice(0, 4));
+    if (body.data < janela.inicio || body.data > janela.fim) ano = Number(body.data.slice(0, 4));  // data fora do período exibido
     sel = { area: a.id, data: body.data };
     await load();
-  } catch (e) { erro(e.message); }
+  } catch (e) { falha(e); }
 });
 
-$('#data').value = hojeISO();
 load();
 </script>
 </body>

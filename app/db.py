@@ -17,18 +17,30 @@ CREATE TABLE IF NOT EXISTS area (
   cor     TEXT NOT NULL DEFAULT '#216e39'
 );
 
+-- Só eventos são guardados; contagem e nível são calculados na leitura.
 CREATE TABLE IF NOT EXISTS evento (
-  id      INTEGER PRIMARY KEY,
-  area_id INTEGER NOT NULL REFERENCES area(id) ON DELETE CASCADE,
-  data    TEXT NOT NULL,                 -- 'YYYY-MM-DD'
-  valor   REAL NOT NULL DEFAULT 1 CHECK (valor > 0),
-  nota    TEXT
+  id        INTEGER PRIMARY KEY,
+  area_id   INTEGER NOT NULL REFERENCES area(id) ON DELETE CASCADE,
+  data      TEXT NOT NULL,                 -- dia local, 'YYYY-MM-DD'
+  valor     REAL NOT NULL DEFAULT 1 CHECK (valor > 0),
+  nota      TEXT,
+  origem    TEXT,                          -- nome do dispositivo que registrou
+  criado_em TEXT                           -- UTC, ISO 8601
 );
 
 CREATE INDEX IF NOT EXISTS idx_evento_area_data ON evento(area_id, data);
+
+CREATE TABLE IF NOT EXISTS dispositivo (
+  id          INTEGER PRIMARY KEY,
+  nome        TEXT NOT NULL,
+  token_hash  TEXT NOT NULL UNIQUE,        -- SHA-256 do token; o token em si não é guardado
+  criado_em   TEXT NOT NULL,
+  revogado_em TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_dispositivo_ativo ON dispositivo(nome) WHERE revogado_em IS NULL;
 """
 
-# Áreas iniciais. Para 'quantidade', limites = mínimo de cada nível 1..4:
+# Para 'quantidade', limites = mínimo de cada nível 1..4:
 # 1-24 -> nível 1, 25-49 -> 2, 50-74 -> 3, 75+ -> 4.
 AREAS_INICIAIS = [
     ("Projeto", "booleano", "h", None, "#2f81f7"),
@@ -48,6 +60,11 @@ def conectar(path=None):
 
 def iniciar(conn):
     conn.executescript(SCHEMA)
+    # Migração de bancos criados antes dessas colunas existirem.
+    colunas = {r["name"] for r in conn.execute("PRAGMA table_info(evento)")}
+    for col in ("origem", "criado_em"):
+        if col not in colunas:
+            conn.execute(f"ALTER TABLE evento ADD COLUMN {col} TEXT")
     if conn.execute("SELECT COUNT(*) FROM area").fetchone()[0] == 0:
         for nome, tipo, unidade, limites, cor in AREAS_INICIAIS:
             conn.execute(
@@ -64,7 +81,7 @@ def area_para_dict(row):
 
 
 def calcular_nivel(area, contagem, total):
-    """Nível 0..4 de um dia. `area` é o dict de área, `contagem` = nº de registros, `total` = soma dos valores."""
+    """Nível 0..4 de um dia. `contagem` = nº de registros, `total` = soma dos valores."""
     if contagem == 0:
         return 0
     if area["tipo"] == "booleano":
@@ -73,8 +90,14 @@ def calcular_nivel(area, contagem, total):
     return max(1, atingidos)  # qualquer registro aparece pelo menos como nível 1
 
 
-def calendario(conn, area_id, ano):
-    """Todos os dias do ano com contagem, total e nível. None se a área não existe."""
+def janela_rolante(hoje):
+    """Como no GitHub: 53 colunas de semana (domingo a sábado) terminando em `hoje`."""
+    domingo = hoje - timedelta(days=(hoje.weekday() + 1) % 7)
+    return domingo - timedelta(weeks=52), hoje
+
+
+def calendario(conn, area_id, inicio, fim):
+    """Dias de `inicio` a `fim` (inclusive, objetos date) com contagem, total e nível."""
     row = conn.execute("SELECT * FROM area WHERE id = ?", (area_id,)).fetchone()
     if row is None:
         return None
@@ -82,15 +105,15 @@ def calendario(conn, area_id, ano):
     rows = conn.execute(
         "SELECT data, COUNT(*) AS c, SUM(valor) AS t FROM evento "
         "WHERE area_id = ? AND data BETWEEN ? AND ? GROUP BY data",
-        (area_id, f"{ano}-01-01", f"{ano}-12-31"),
+        (area_id, inicio.isoformat(), fim.isoformat()),
     ).fetchall()
     por_dia = {r["data"]: (r["c"], r["t"]) for r in rows}
 
-    dias, d = [], date(ano, 1, 1)
-    while d.year == ano:
+    dias, d = [], inicio
+    while d <= fim:
         iso = d.isoformat()
         contagem, total = por_dia.get(iso, (0, 0))
         dias.append({"data": iso, "contagem": contagem, "total": total,
                      "nivel": calcular_nivel(area, contagem, total)})
         d += timedelta(days=1)
-    return {"area": area, "ano": ano, "dias": dias}
+    return {"area": area, "dias": dias}
