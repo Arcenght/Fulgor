@@ -2,12 +2,14 @@
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
-import db
+from . import db
 
 
 @asynccontextmanager
@@ -125,3 +127,7 @@ def obter_calendario(area_id: int, ano: int = Query(default_factory=lambda: date
 def obter_todos(ano: int = Query(default_factory=lambda: date.today().year), conn=Depends(get_conn)):
     ids = [r["id"] for r in conn.execute("SELECT id FROM area ORDER BY id")]
     return [db.calendario(conn, i, ano) for i in ids]
+
+
+# Serve a página em "/". Fica por último para não encobrir as rotas da API.
+app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent.parent / "static", html=True), name="static")

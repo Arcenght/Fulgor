@@ -5,7 +5,7 @@ import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
-DB_PATH = Path(os.environ.get("HABITOS_DB", "habitos.db"))
+DB_PATH = Path(os.environ.get("HABITOS_DB", "data/habitos.db"))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS area (
@@ -38,7 +38,9 @@ AREAS_INICIAIS = [
 
 
 def conectar(path=None):
-    conn = sqlite3.connect(str(path or DB_PATH), check_same_thread=False)
+    destino = Path(path or DB_PATH)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(destino), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
