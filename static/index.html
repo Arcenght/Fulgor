@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hábitos</title>
+<style>
+:root{--bg:#f5f6f8;--ink:#1b1e24;--mut:#656b76;--line:#d9dce2;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--ink:#e6e8ec;--mut:#98a0ac;--line:#2a2e35}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
+main{max-width:920px;margin:0 auto;padding:24px 16px 64px}
+header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:24px}
+h1{font-size:24px;margin:0;font-weight:700;letter-spacing:-.02em}
+select,input,button{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+button{cursor:pointer}
+button.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:40px}
+label{display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--mut)}
+label[hidden]{display:none}
+#err{background:color-mix(in srgb,#d33 14%,var(--bg));border:1px solid #d33;border-radius:6px;padding:8px 12px;margin:0 0 20px}
+.area{margin-bottom:36px}
+.area h2{font-size:17px;margin:0;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.area h2 span{color:var(--mut);font-weight:400;font-size:13px}
+.sw{width:10px;height:10px;border-radius:50%;background:var(--c);align-self:center}
+.scroll{overflow-x:auto;padding:6px 0 8px}
+.months{position:relative;height:16px;width:795px;font-size:12px;color:var(--mut)}
+.months span{position:absolute;top:0}
+.grid{display:grid;grid-template-rows:repeat(7,12px);grid-auto-flow:column;grid-auto-columns:12px;gap:3px;width:max-content}
+.d{width:12px;height:12px;padding:0;border:0;border-radius:3px;background:color-mix(in srgb,var(--ink) 9%,var(--bg))}
+.n1{background:color-mix(in srgb,var(--c) 30%,var(--bg))}
+.n2{background:color-mix(in srgb,var(--c) 52%,var(--bg))}
+.n3{background:color-mix(in srgb,var(--c) 76%,var(--bg))}
+.n4{background:var(--c)}
+.d.sel{outline:2px solid var(--ink);outline-offset:1px}
+.det{margin-top:8px;font-size:14px}
+.det .ev{display:flex;gap:10px;align-items:center;padding:2px 0}
+.det button{font-size:12px;padding:2px 8px}
+.mut{color:var(--mut)}
+#tip{position:fixed;display:none;pointer-events:none;z-index:9;background:var(--ink);color:var(--bg);padding:4px 8px;border-radius:5px;font-size:12px;white-space:nowrap;transform:translate(-50%,-100%)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Hábitos</h1>
+    <select id="ano" aria-label="Ano"></select>
+  </header>
+
+  <form id="f">
+    <label>Área <select id="area"></select></label>
+    <label>Data <input id="data" type="date" required></label>
+    <label id="lv" hidden>Valor <input id="valor" type="number" min="0" step="any" style="width:7em"></label>
+    <label>Nota <input id="nota" type="text" placeholder="opcional"></label>
+    <button class="primary" type="submit">Registrar</button>
+  </form>
+
+  <p id="err" role="alert" hidden></p>
+  <div id="areas"></div>
+</main>
+<div id="tip"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const pad = n => String(n).padStart(2, '0');
+const hojeISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const fmtN = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+const fmtD = iso => new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
+const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  e.append(...kids);
+  return e;
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let m = r.statusText;
+    try { const j = await r.json(); m = typeof j.detail === 'string' ? j.detail : 'Dados inválidos.'; } catch {}
+    throw new Error(m);
+  }
+  return r.status === 204 ? null : r.json();
+}
+
+const erro = m => { const e = $('#err'); e.textContent = m || ''; e.hidden = !m; };
+
+let ano = new Date().getFullYear();
+let cals = [];
+let sel = null; // { area, data }
+
+function rotulo(a, d) {
+  if (!d.contagem) return `${fmtD(d.data)}: sem registro`;
+  return `${fmtD(d.data)}: ${a.unidade ? fmtN(d.total) + ' ' + a.unidade : 'feito'}`;
+}
+
+function opcoesAno() {
+  const atual = new Date().getFullYear();
+  const s = $('#ano');
+  s.replaceChildren();
+  for (let y = Math.max(atual, ano); y >= Math.min(atual - 4, ano); y--) {
+    s.append(el('option', { value: y, text: y }));
+  }
+  s.value = ano;
+}
+
+function opcoesArea() {
+  const s = $('#area');
+  const atual = s.value;
+  s.replaceChildren(...cals.map(c => el('option', { value: c.area.id, text: c.area.nome })));
+  if (atual) s.value = atual;
+  atualizarForm();
+}
+
+function areaSelecionada() {
+  const c = cals.find(c => String(c.area.id) === $('#area').value);
+  return c ? c.area : null;
+}
+
+function atualizarForm() {
+  const a = areaSelecionada();
+  const usaValor = !!a && (a.tipo === 'quantidade' || !!a.unidade);
+  $('#lv').hidden = !usaValor;
+  $('#valor').required = usaValor;
+  $('#lv').firstChild.textContent = a && a.unidade ? `Valor (${a.unidade}) ` : 'Valor ';
+}
+
+async function detalhe(a, data, box) {
+  box.replaceChildren(el('strong', { text: fmtD(data) }));
+  try {
+    const ev = (await api(`/eventos?area_id=${a.id}&ano=${ano}`)).filter(e => e.data === data);
+    if (!ev.length) { box.append(el('div', { class: 'mut', text: 'Nenhum registro neste dia.' })); return; }
+    for (const e of ev) {
+      const txt = (a.unidade ? `${fmtN(e.valor)} ${a.unidade}` : 'feito') + (e.nota ? `: ${e.nota}` : '');
+      box.append(el('div', { class: 'ev' },
+        el('span', { text: txt }),
+        el('button', { type: 'button', text: 'Remover', onclick: () => remover(e.id) })));
+    }
+  } catch (x) { erro(x.message); }
+}
+
+function secao(c) {
+  const a = c.area, dias = c.dias, off = new Date(c.ano, 0, 1).getDay();
+  const ativos = dias.filter(d => d.contagem).length;
+  const total = dias.reduce((s, d) => s + d.total, 0);
+  const resumo = `${ativos} ${ativos === 1 ? 'dia' : 'dias'}` + (a.unidade ? `, ${fmtN(total)} ${a.unidade}` : '');
+
+  const meses = el('div', { class: 'months' });
+  MESES.forEach((m, i) => {
+    const idx = dias.findIndex(d => d.data.slice(5) === `${pad(i + 1)}-01`);
+    meses.append(el('span', { text: m, style: `left:${Math.floor((off + idx) / 7) * 15}px` }));
+  });
+
+  const grid = el('div', { class: 'grid' });
+  dias.forEach((d, i) => {
+    const b = el('button', { type: 'button', class: `d n${d.nivel}`, 'data-i': i, 'aria-label': rotulo(a, d) });
+    if (i === 0) b.style.gridRowStart = off + 1;
+    if (sel && sel.area === a.id && sel.data === d.data) b.classList.add('sel');
+    grid.append(b);
+  });
+
+  const det = el('div', { class: 'det' });
+  const diaDe = t => { const b = t.closest('.d'); return b ? { b, d: dias[b.dataset.i] } : null; };
+  const mostrar = (t) => {
+    const x = diaDe(t); if (!x) return;
+    const r = x.b.getBoundingClientRect(), tip = $('#tip');
+    tip.textContent = rotulo(a, x.d);
+    tip.style.left = `${r.left + r.width / 2}px`;
+    tip.style.top = `${r.top - 6}px`;
+    tip.style.display = 'block';
+  };
+  const esconder = () => { $('#tip').style.display = 'none'; };
+  grid.addEventListener('mouseover', e => mostrar(e.target));
+  grid.addEventListener('focusin', e => mostrar(e.target));
+  grid.addEventListener('mouseout', esconder);
+  grid.addEventListener('focusout', esconder);
+  grid.addEventListener('click', e => {
+    const x = diaDe(e.target); if (!x) return;
+    sel = { area: a.id, data: x.d.data };
+    document.querySelectorAll('.d.sel').forEach(n => n.classList.remove('sel'));
+    document.querySelectorAll('.det').forEach(n => n.replaceChildren());
+    x.b.classList.add('sel');
+    $('#area').value = a.id; atualizarForm();
+    $('#data').value = x.d.data;
+    detalhe(a, x.d.data, det);
+  });
+  if (sel && sel.area === a.id) detalhe(a, sel.data, det);
+
+  return el('section', { class: 'area', style: `--c:${a.cor}` },
+    el('h2', {}, el('i', { class: 'sw' }), a.nome, el('span', { text: resumo })),
+    el('div', { class: 'scroll' }, meses, grid),
+    det);
+}
+
+function render() {
+  const box = $('#areas');
+  if (!cals.length) { box.replaceChildren(el('p', { class: 'mut', text: 'Nenhuma área cadastrada.' })); return; }
+  box.replaceChildren(...cals.map(secao));
+  const atual = ano === new Date().getFullYear();
+  document.querySelectorAll('.scroll').forEach(s => { s.scrollLeft = atual ? s.scrollWidth : 0; });
+}
+
+async function load() {
+  try {
+    cals = await api(`/calendarios?ano=${ano}`);
+    erro('');
+    opcoesAno(); opcoesArea(); render();
+  } catch (e) { erro(e.message); }
+}
+
+async function remover(id) {
+  if (!confirm('Remover este registro?')) return;
+  try { await api(`/eventos/${id}`, { method: 'DELETE' }); await load(); }
+  catch (e) { erro(e.message); }
+}
+
+$('#ano').addEventListener('change', e => { ano = Number(e.target.value); sel = null; load(); });
+$('#area').addEventListener('change', atualizarForm);
+$('#f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const a = areaSelecionada(); if (!a) return;
+  const body = { area_id: a.id, data: $('#data').value };
+  if (!$('#lv').hidden) {
+    const v = parseFloat($('#valor').value);
+    if (!(v > 0)) { erro('Informe um valor maior que zero.'); return; }
+    body.valor = v;
+  }
+  const nota = $('#nota').value.trim();
+  if (nota) body.nota = nota;
+  try {
+    await api('/eventos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    $('#valor').value = ''; $('#nota').value = '';
+    ano = Number(body.data.slice(0, 4));
+    sel = { area: a.id, data: body.data };
+    await load();
+  } catch (e) { erro(e.message); }
+});
+
+$('#data').value = hojeISO();
+load();
+</script>
+</body>
+</html>
