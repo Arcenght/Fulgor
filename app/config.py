@@ -13,3 +13,7 @@ JANELA_DIAS = int(os.environ["HABITOS_JANELA_DIAS"]) if os.environ.get("HABITOS_
 
 def hoje() -> date:
     return datetime.now(TZ).date()
+
+# A página escolhe o dispositivo num seletor (cabeçalho X-Dispositivo), sem digitar token.
+# Defina HABITOS_ESCRITA_PAGINA=0 para exigir sempre o token Bearer.
+ESCRITA_PELA_PAGINA = os.environ.get("HABITOS_ESCRITA_PAGINA", "1") != "0"

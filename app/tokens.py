@@ -21,12 +21,17 @@ def agora():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def criar(conn, nome):
+def criar_com_id(conn, nome, origem="cli"):
     token = secrets.token_urlsafe(32)
-    conn.execute("INSERT INTO dispositivo (nome, token_hash, criado_em) VALUES (?,?,?)",
-                 (nome, _hash(token), agora()))
+    cur = conn.execute("INSERT INTO dispositivo (nome, token_hash, criado_em) VALUES (?,?,?)",
+                       (nome, _hash(token), agora()))
+    db.log(conn, "dispositivo", cur.lastrowid, "criar", None, {"nome": nome}, origem)
     conn.commit()
-    return token
+    return cur.lastrowid, token
+
+
+def criar(conn, nome, origem="cli"):
+    return criar_com_id(conn, nome, origem)[1]
 
 
 def validar(conn, token):
@@ -36,11 +41,41 @@ def validar(conn, token):
     return row["nome"] if row else None
 
 
-def revogar(conn, nome):
-    cur = conn.execute("UPDATE dispositivo SET revogado_em = ? WHERE nome = ? AND revogado_em IS NULL",
-                       (agora(), nome))
+def nome_ativo(conn, dispositivo_id):
+    row = conn.execute("SELECT nome FROM dispositivo WHERE id = ? AND revogado_em IS NULL",
+                       (dispositivo_id,)).fetchone()
+    return row["nome"] if row else None
+
+
+def renomear(conn, dispositivo_id, novo_nome, origem="cli"):
+    """Troca só o nome; o token (hash) continua o mesmo. Levanta IntegrityError se o nome já existe."""
+    antes = nome_ativo(conn, dispositivo_id)
+    if antes is None:
+        return False
+    conn.execute("UPDATE dispositivo SET nome = ? WHERE id = ?", (novo_nome, dispositivo_id))
+    db.log(conn, "dispositivo", dispositivo_id, "editar", {"nome": antes}, {"nome": novo_nome}, origem)
     conn.commit()
-    return cur.rowcount > 0
+    return True
+
+
+def revogar_id(conn, dispositivo_id, origem="cli"):
+    antes = nome_ativo(conn, dispositivo_id)
+    if antes is None:
+        return False
+    conn.execute("UPDATE dispositivo SET revogado_em = ? WHERE id = ?", (agora(), dispositivo_id))
+    db.log(conn, "dispositivo", dispositivo_id, "remover", {"nome": antes}, None, origem)
+    conn.commit()
+    return True
+
+
+def revogar(conn, nome):
+    row = conn.execute("SELECT id FROM dispositivo WHERE nome = ? AND revogado_em IS NULL", (nome,)).fetchone()
+    return revogar_id(conn, row["id"]) if row else False
+
+
+def listar_ativos(conn):
+    return [dict(r) for r in conn.execute(
+        "SELECT id, nome, criado_em FROM dispositivo WHERE revogado_em IS NULL ORDER BY id")]
 
 
 def listar(conn):

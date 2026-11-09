@@ -39,6 +39,13 @@ label{display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--mut)
 .det button{font-size:12px;padding:2px 8px}
 .mut{color:var(--mut)}
 #tip{position:fixed;display:none;pointer-events:none;z-index:9;background:var(--ink);color:var(--bg);padding:4px 8px;border-radius:5px;font-size:12px;white-space:nowrap;transform:translate(-50%,-100%)}
+#info{background:color-mix(in srgb,#2f81f7 14%,var(--bg));border:1px solid #2f81f7;border-radius:6px;padding:8px 12px;margin:0 0 20px;word-break:break-all}
+#ger{border:1px solid var(--line);border-radius:8px;padding:4px 16px 12px;margin-bottom:28px}
+#ger h3{font-size:14px;margin:14px 0 4px}
+.row{display:flex;gap:8px;align-items:center;margin:4px 0;flex-wrap:wrap}
+.grow{flex:1}
+#fa{margin:12px 0;padding:12px;border:1px dashed var(--line);border-radius:6px}
+#g-hist{font-size:13px;color:var(--mut);padding-left:18px;max-height:240px;overflow:auto}
 </style>
 </head>
 <body>
@@ -46,14 +53,25 @@ label{display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--mut)
   <header>
     <h1>Hábitos</h1>
     <select id="ano" aria-label="Período"></select>
-    <button id="sair" type="button">Token de escrita</button>
+    <select id="disp" aria-label="Dispositivo que está registrando"></select>
+    <button id="ger-btn" type="button">Gerenciar</button>
   </header>
 
-  <!-- O token só é necessário para registrar/remover e identifica o dispositivo. A leitura é aberta. -->
-  <form id="login" hidden>
-    <label>Token deste dispositivo (para registrar) <input id="tk" type="password" autocomplete="off" required style="width:22em;max-width:100%"></label>
-    <button class="primary" type="submit">Salvar</button>
-  </form>
+  <section id="ger" hidden>
+    <h3>Dispositivos</h3><div id="g-disp"></div>
+    <h3>Áreas</h3><div id="g-area"></div>
+    <form id="fa" hidden>
+      <label>Nome <input id="fa-nome" required></label>
+      <label>Tipo <select id="fa-tipo"><option value="booleano">Feito / não feito</option><option value="quantidade">Quantidade (nível pela soma do dia)</option></select></label>
+      <label>Unidade <input id="fa-un" placeholder="opcional" style="width:8em"></label>
+      <label id="fa-lim" hidden>Mínimo dos níveis 1 a 4 (crescente)
+        <span class="row"><input class="lim" type="number" min="0" step="any" style="width:5em"><input class="lim" type="number" min="0" step="any" style="width:5em"><input class="lim" type="number" min="0" step="any" style="width:5em"><input class="lim" type="number" min="0" step="any" style="width:5em"></span></label>
+      <label>Cor <input id="fa-cor" type="color"></label>
+      <button class="primary" type="submit">Salvar área</button>
+      <button id="fa-x" type="button">Cancelar</button>
+    </form>
+    <h3>Histórico de alterações</h3><ol id="g-hist"></ol>
+  </section>
 
   <form id="f">
     <label>Área <select id="area"></select></label>
@@ -64,6 +82,7 @@ label{display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--mut)
   </form>
 
   <p id="err" role="alert" hidden></p>
+  <p id="info" hidden></p>
   <div id="areas"></div>
 </main>
 <div id="tip"></div>
@@ -74,7 +93,7 @@ const pad = n => String(n).padStart(2, '0');
 const fmtN = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 const fmtD = iso => new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
 const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
-const TOKEN_KEY = 'habitos_token';
+const DISP_KEY = 'habitos_dispositivo';
 
 function el(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
@@ -90,8 +109,8 @@ function el(tag, props = {}, ...kids) {
 
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
-  const t = localStorage.getItem(TOKEN_KEY);
-  if (t) headers.Authorization = 'Bearer ' + t;
+  const d = localStorage.getItem(DISP_KEY);
+  if (d) headers['X-Dispositivo'] = d;
   const r = await fetch(path, { ...opts, headers });
   if (!r.ok) {
     let m = r.statusText;
@@ -103,8 +122,7 @@ async function api(path, opts = {}) {
 
 const erro = m => { const e = $('#err'); e.textContent = m || ''; e.hidden = !m; };
 function falha(e) {
-  if (e.status === 401) $('#login').hidden = false;   // só escrita pede token
-  erro(e.message);
+  erro(e.status === 401 ? 'Escolha um dispositivo no seletor do topo para registrar.' : e.message);
 }
 
 let ano = null;       // null = últimos 12 meses (termina hoje)
@@ -252,17 +270,90 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) chec
 
 $('#ano').addEventListener('change', e => { ano = e.target.value ? Number(e.target.value) : null; sel = null; load(); });
 $('#area').addEventListener('change', atualizarForm);
-$('#login').addEventListener('submit', ev => {
+let disps = [], editando = 0;
+const enviar = (m, p, b) => api(p, { method: m, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+const info = m => { const e = $('#info'); e.textContent = m || ''; e.hidden = !m; };
+
+async function carregarDisps() {
+  disps = await api('/api/dispositivos');
+  let id = localStorage.getItem(DISP_KEY);
+  if (!disps.some(d => String(d.id) === id)) {
+    id = disps[0] ? String(disps[0].id) : '';
+    if (id) localStorage.setItem(DISP_KEY, id); else localStorage.removeItem(DISP_KEY);
+  }
+  $('#disp').replaceChildren(...disps.map(d => el('option', { value: d.id, text: d.nome })));
+  $('#disp').value = id;
+}
+
+async function acao(fn) {
+  try { await fn(); erro(''); await carregarDisps(); await load(); if (!$('#ger').hidden) await renderGer(); }
+  catch (e) { falha(e); }
+}
+
+function renderDisps() {
+  const n = el('input', { placeholder: 'novo dispositivo', 'aria-label': 'Nome do novo dispositivo' });
+  $('#g-disp').replaceChildren(...disps.map(d => {
+    const i = el('input', { value: d.nome, 'aria-label': 'Nome do dispositivo' });
+    return el('div', { class: 'row' }, i,
+      el('button', { type: 'button', text: 'Renomear', onclick: () => acao(() => enviar('PUT', `/api/dispositivos/${d.id}`, { nome: i.value.trim() })) }),
+      el('button', { type: 'button', text: 'Remover', onclick: () => { if (confirm(`Remover "${d.nome}"? O token dele deixa de funcionar.`)) acao(() => api(`/api/dispositivos/${d.id}`, { method: 'DELETE' })); } }));
+  }), el('div', { class: 'row' }, n,
+    el('button', { type: 'button', class: 'primary', text: 'Adicionar', onclick: () => acao(async () => {
+      const r = await enviar('POST', '/api/dispositivos', { nome: n.value.trim() });
+      info(`Token de "${r.nome}" para uso em API/ESP32 (aparece só agora): ${r.token}`);
+    }) })));
+}
+
+function renderAreas() {
+  $('#g-area').replaceChildren(...cals.map(({ area: a }) => el('div', { class: 'row' },
+    el('span', { class: 'grow', text: `${a.nome} (${a.tipo}${a.unidade ? ', ' + a.unidade : ''}${a.limites ? ', níveis ' + a.limites.join('/') : ''})` }),
+    el('button', { type: 'button', text: 'Editar', onclick: () => abrirArea(a) }),
+    el('button', { type: 'button', text: 'Remover', onclick: () => { if (confirm(`Remover "${a.nome}" e todos os registros dela? Tudo fica guardado no histórico.`)) acao(() => api(`/api/areas/${a.id}`, { method: 'DELETE' })); } }))),
+    el('button', { type: 'button', text: 'Nova área', onclick: () => abrirArea(null) }));
+}
+
+function resumoH(x) {
+  const a = (x.antes && x.antes.area) || x.antes, b = x.depois;
+  if (x.acao === 'editar') {
+    const mud = Object.keys(b).filter(k => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+    return mud.map(k => `${k}: ${a[k] ?? '—'} → ${b[k] ?? '—'}`).join('; ') || 'sem mudanças';
+  }
+  return (b || a).nome + (x.acao === 'remover' && x.antes.eventos ? ` (${x.antes.eventos.length} registros arquivados)` : '');
+}
+
+async function renderGer() {
+  renderDisps(); renderAreas();
+  try {
+    const h = await api('/api/historico?limite=50');
+    $('#g-hist').replaceChildren(...h.map(x => el('li', { text: `${new Date(x.em).toLocaleString('pt-BR')} · ${x.origem || '?'} · ${x.acao} ${x.entidade}: ${resumoH(x)}` })));
+  } catch (e) { falha(e); }
+}
+
+const limVis = () => { $('#fa-lim').hidden = $('#fa-tipo').value !== 'quantidade'; };
+function abrirArea(a) {
+  editando = a ? a.id : 0;
+  $('#fa').hidden = false;
+  $('#fa-nome').value = a ? a.nome : '';
+  $('#fa-tipo').value = a ? a.tipo : 'booleano';
+  $('#fa-un').value = (a && a.unidade) || '';
+  $('#fa-cor').value = a ? a.cor : '#216e39';
+  document.querySelectorAll('.lim').forEach((i, k) => { i.value = a && a.limites ? a.limites[k] : ''; });
+  limVis();
+  $('#fa-nome').focus();
+}
+
+$('#disp').addEventListener('change', e => localStorage.setItem(DISP_KEY, e.target.value));
+$('#ger-btn').addEventListener('click', () => { const g = $('#ger'); g.hidden = !g.hidden; if (!g.hidden) renderGer(); });
+$('#fa-tipo').addEventListener('change', limVis);
+$('#fa-x').addEventListener('click', () => { $('#fa').hidden = true; });
+$('#fa').addEventListener('submit', ev => {
   ev.preventDefault();
-  localStorage.setItem(TOKEN_KEY, $('#tk').value.trim());
-  $('#tk').value = '';
-  $('#login').hidden = true;
-  erro('');
-});
-$('#sair').addEventListener('click', () => {
-  // Só mexe no token de escrita; o calendário continua visível.
-  $('#login').hidden = !$('#login').hidden;
-  if (!$('#login').hidden) $('#tk').focus();
+  const tipo = $('#fa-tipo').value;
+  const body = { nome: $('#fa-nome').value.trim(), tipo, unidade: $('#fa-un').value.trim() || null, cor: $('#fa-cor').value };
+  if (tipo === 'quantidade') body.limites = [...document.querySelectorAll('.lim')].map(i => parseFloat(i.value));
+  const id = editando;
+  $('#fa').hidden = true;
+  acao(() => id ? enviar('PUT', `/api/areas/${id}`, body) : enviar('POST', '/api/areas', body));
 });
 $('#f').addEventListener('submit', async ev => {
   ev.preventDefault();
@@ -284,7 +375,7 @@ $('#f').addEventListener('submit', async ev => {
   } catch (e) { falha(e); }
 });
 
-load();
+(async () => { try { await carregarDisps(); } catch (e) { falha(e); } load(); })();
 </script>
 </body>
 </html>

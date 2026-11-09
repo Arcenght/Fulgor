@@ -1,8 +1,10 @@
 """Acesso ao SQLite e regras de cálculo do calendário (só biblioteca padrão)."""
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 DB_PATH = Path(os.environ.get("HABITOS_DB", "data/habitos.db"))
@@ -38,6 +40,20 @@ CREATE TABLE IF NOT EXISTS dispositivo (
   revogado_em TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_dispositivo_ativo ON dispositivo(nome) WHERE revogado_em IS NULL;
+
+-- Histórico de criação/edição/remoção de áreas e dispositivos (antes/depois em JSON).
+-- Ao remover uma área, 'antes' guarda também todos os eventos dela.
+CREATE TABLE IF NOT EXISTS historico (
+  id          INTEGER PRIMARY KEY,
+  entidade    TEXT NOT NULL CHECK (entidade IN ('area', 'dispositivo')),
+  entidade_id INTEGER NOT NULL,
+  acao        TEXT NOT NULL CHECK (acao IN ('criar', 'editar', 'remover')),
+  antes       TEXT,
+  depois      TEXT,
+  origem      TEXT,
+  em          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_historico_entidade ON historico(entidade, entidade_id);
 """
 
 # Para 'quantidade', limites = mínimo de cada nível 1..4:
@@ -47,6 +63,8 @@ AREAS_INICIAIS = [
     ("Páginas lidas", "quantidade", "páginas", [1, 25, 50, 75], "#a371f7"),
     ("Exercício", "booleano", None, None, "#216e39"),
 ]
+
+DISPOSITIVOS_INICIAIS = ["pc1", "pc2", "celular"]
 
 
 def conectar(path=None):
@@ -71,7 +89,22 @@ def iniciar(conn):
                 "INSERT INTO area (nome, tipo, unidade, limites, cor) VALUES (?,?,?,?,?)",
                 (nome, tipo, unidade, json.dumps(limites) if limites else None, cor),
             )
+    if conn.execute("SELECT COUNT(*) FROM dispositivo").fetchone()[0] == 0:
+        for nome in DISPOSITIVOS_INICIAIS:  # a página não precisa do token; para API/ESP32 crie um dispositivo em "Gerenciar"
+            conn.execute("INSERT INTO dispositivo (nome, token_hash, criado_em) VALUES (?,?,?)",
+                         (nome, hashlib.sha256(secrets.token_urlsafe(32).encode()).hexdigest(),
+                          datetime.now(timezone.utc).isoformat(timespec="seconds")))
     conn.commit()
+
+
+def log(conn, entidade, entidade_id, acao, antes, depois, origem):
+    """Registra uma alteração no histórico (o commit fica por conta de quem chama)."""
+    conn.execute(
+        "INSERT INTO historico (entidade, entidade_id, acao, antes, depois, origem, em) VALUES (?,?,?,?,?,?,?)",
+        (entidade, entidade_id, acao,
+         None if antes is None else json.dumps(antes, ensure_ascii=False),
+         None if depois is None else json.dumps(depois, ensure_ascii=False),
+         origem, datetime.now(timezone.utc).isoformat(timespec="seconds")))
 
 
 def area_para_dict(row):

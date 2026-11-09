@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -34,15 +34,21 @@ def get_conn():
         conn.close()
 
 
-def escrita(cred: Optional[HTTPAuthorizationCredentials] = Depends(bearer), conn=Depends(get_conn)) -> str:
-    """Exige token válido; devolve o nome do dispositivo (gravado como 'origem' do evento).
+def escrita(cred: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+            x_dispositivo: Optional[int] = Header(default=None), conn=Depends(get_conn)) -> str:
+    """Identifica quem escreve; devolve o nome do dispositivo (gravado como 'origem' e no histórico).
 
-    O token serve apenas para escrever e identificar quem registrou.
-    A leitura é sempre aberta: todos os dispositivos veem as mesmas áreas e o mesmo calendário.
+    Aceita (1) token Bearer (ESP32, scripts) ou (2) o id do dispositivo escolhido na página
+    (cabeçalho X-Dispositivo), se HABITOS_ESCRITA_PAGINA não for 0. A leitura é sempre aberta.
     """
-    nome = tokens.validar(conn, cred.credentials) if cred else None
+    if cred:
+        nome = tokens.validar(conn, cred.credentials)
+    elif x_dispositivo is not None and config.ESCRITA_PELA_PAGINA:
+        nome = tokens.nome_ativo(conn, x_dispositivo)
+    else:
+        nome = None
     if nome is None:
-        raise HTTPException(401, "Token ausente ou inválido", headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(401, "Dispositivo não selecionado ou token inválido", headers={"WWW-Authenticate": "Bearer"})
     return nome
 
 
@@ -132,25 +138,105 @@ def obter_todos(ano: Optional[int] = None, conn=Depends(get_conn)):
 
 # ---------- Escrita (exige token; o token só identifica o dispositivo) ----------
 
-@api.post("/areas", status_code=201, dependencies=[Depends(escrita)])
-def criar_area(a: AreaIn, conn=Depends(get_conn)):
+def _area(conn, area_id):
+    return conn.execute("SELECT * FROM area WHERE id = ?", (area_id,)).fetchone()
+
+
+def _valores(a):
+    return (a.nome, a.tipo, a.unidade or None, json.dumps(a.limites) if a.limites else None, a.cor)
+
+
+@api.post("/areas", status_code=201)
+def criar_area(a: AreaIn, origem: str = Depends(escrita), conn=Depends(get_conn)):
     try:
-        cur = conn.execute(
-            "INSERT INTO area (nome, tipo, unidade, limites, cor) VALUES (?,?,?,?,?)",
-            (a.nome, a.tipo, a.unidade, json.dumps(a.limites) if a.limites else None, a.cor),
-        )
-        conn.commit()
+        cur = conn.execute("INSERT INTO area (nome, tipo, unidade, limites, cor) VALUES (?,?,?,?,?)", _valores(a))
     except sqlite3.IntegrityError:
         raise HTTPException(409, "Já existe uma área com esse nome")
-    return db.area_para_dict(conn.execute("SELECT * FROM area WHERE id=?", (cur.lastrowid,)).fetchone())
-
-
-@api.delete("/areas/{area_id}", status_code=204, dependencies=[Depends(escrita)])
-def remover_area(area_id: int, conn=Depends(get_conn)):
-    cur = conn.execute("DELETE FROM area WHERE id = ?", (area_id,))
+    nova = db.area_para_dict(_area(conn, cur.lastrowid))
+    db.log(conn, "area", cur.lastrowid, "criar", None, nova, origem)
     conn.commit()
-    if cur.rowcount == 0:
+    return nova
+
+
+@api.put("/areas/{area_id}")
+def editar_area(area_id: int, a: AreaIn, origem: str = Depends(escrita), conn=Depends(get_conn)):
+    antes = _area(conn, area_id)
+    if antes is None:
         raise HTTPException(404, "Área não encontrada")
+    try:
+        conn.execute("UPDATE area SET nome=?, tipo=?, unidade=?, limites=?, cor=? WHERE id=?", (*_valores(a), area_id))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise HTTPException(409, "Já existe uma área com esse nome")
+    depois = db.area_para_dict(_area(conn, area_id))
+    db.log(conn, "area", area_id, "editar", db.area_para_dict(antes), depois, origem)
+    conn.commit()
+    return depois
+
+
+@api.delete("/areas/{area_id}", status_code=204)
+def remover_area(area_id: int, origem: str = Depends(escrita), conn=Depends(get_conn)):
+    antes = _area(conn, area_id)
+    if antes is None:
+        raise HTTPException(404, "Área não encontrada")
+    eventos = [dict(r) for r in conn.execute("SELECT * FROM evento WHERE area_id = ?", (area_id,))]
+    db.log(conn, "area", area_id, "remover", {"area": db.area_para_dict(antes), "eventos": eventos}, None, origem)
+    conn.execute("DELETE FROM area WHERE id = ?", (area_id,))
+    conn.commit()
+
+
+class DispositivoIn(BaseModel):
+    nome: str = Field(min_length=1, max_length=40)
+
+
+@api.get("/dispositivos")
+def listar_dispositivos(conn=Depends(get_conn)):
+    return tokens.listar_ativos(conn)
+
+
+@api.post("/dispositivos", status_code=201)
+def criar_dispositivo(d: DispositivoIn, origem: str = Depends(escrita), conn=Depends(get_conn)):
+    try:
+        did, token = tokens.criar_com_id(conn, d.nome, origem)
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "Já existe um dispositivo com esse nome")
+    return {"id": did, "nome": d.nome, "token": token}  # o token só aparece agora (uso em API/ESP32)
+
+
+@api.put("/dispositivos/{did}")
+def renomear_dispositivo(did: int, d: DispositivoIn, origem: str = Depends(escrita), conn=Depends(get_conn)):
+    try:
+        ok = tokens.renomear(conn, did, d.nome, origem)
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "Já existe um dispositivo com esse nome")
+    if not ok:
+        raise HTTPException(404, "Dispositivo não encontrado")
+    return {"id": did, "nome": d.nome}
+
+
+@api.delete("/dispositivos/{did}", status_code=204)
+def remover_dispositivo(did: int, origem: str = Depends(escrita), conn=Depends(get_conn)):
+    if len(tokens.listar_ativos(conn)) <= 1:
+        raise HTTPException(409, "Mantenha pelo menos um dispositivo ativo.")
+    if not tokens.revogar_id(conn, did, origem):
+        raise HTTPException(404, "Dispositivo não encontrado")
+
+
+@api.get("/historico")
+def listar_historico(entidade: Optional[Literal["area", "dispositivo"]] = None, entidade_id: Optional[int] = None,
+                     limite: int = Query(50, ge=1, le=500), conn=Depends(get_conn)):
+    sql, args = "SELECT * FROM historico WHERE 1=1", []
+    if entidade:
+        sql += " AND entidade = ?"; args.append(entidade)
+    if entidade_id is not None:
+        sql += " AND entidade_id = ?"; args.append(entidade_id)
+    out = []
+    for r in conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limite)):
+        d = dict(r)
+        for k in ("antes", "depois"):
+            d[k] = json.loads(d[k]) if d[k] else None
+        out.append(d)
+    return out
 
 
 @api.post("/eventos", status_code=201)
