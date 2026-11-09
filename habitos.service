@@ -1,0 +1,22 @@
+[Unit]
+Description=Calendário de hábitos (FastAPI)
+After=network.target
+
+[Service]
+User=habitos
+Group=habitos
+WorkingDirectory=/opt/habitos
+EnvironmentFile=/etc/habitos.env
+ExecStart=/opt/habitos/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+
+# O systemd cria /var/lib/habitos (dono: habitos) e é o único lugar com escrita.
+StateDirectory=habitos
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

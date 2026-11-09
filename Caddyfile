@@ -1,0 +1,11 @@
+# Troque pelo seu domínio (com registro DNS apontando para este servidor).
+# O Caddy obtém e renova o certificado HTTPS sozinho.
+habitos.exemplo.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8000
+}
+
+# Sem domínio, só na rede local (HTTP, sem certificado): troque o bloco acima por
+# :80 {
+#     reverse_proxy 127.0.0.1:8000
+# }
