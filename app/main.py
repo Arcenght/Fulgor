@@ -35,17 +35,15 @@ def get_conn():
 
 
 def escrita(cred: Optional[HTTPAuthorizationCredentials] = Depends(bearer), conn=Depends(get_conn)) -> str:
-    """Exige token válido; devolve o nome do dispositivo."""
+    """Exige token válido; devolve o nome do dispositivo (gravado como 'origem' do evento).
+
+    O token serve apenas para escrever e identificar quem registrou.
+    A leitura é sempre aberta: todos os dispositivos veem as mesmas áreas e o mesmo calendário.
+    """
     nome = tokens.validar(conn, cred.credentials) if cred else None
     if nome is None:
         raise HTTPException(401, "Token ausente ou inválido", headers={"WWW-Authenticate": "Bearer"})
     return nome
-
-
-def leitura(cred: Optional[HTTPAuthorizationCredentials] = Depends(bearer), conn=Depends(get_conn)):
-    if config.LEITURA_PUBLICA:
-        return None
-    return escrita(cred, conn)
 
 
 def checar_janela(d: date):
@@ -91,15 +89,48 @@ class EventoIn(BaseModel):
 api = APIRouter(prefix="/api")
 
 
+# ---------- Leitura (aberta, sem token) ----------
+
 @api.get("/hoje")
 def obter_hoje():
     return {"hoje": config.hoje().isoformat(), "fuso": str(config.TZ)}
 
 
-@api.get("/areas", dependencies=[Depends(leitura)])
+@api.get("/areas")
 def listar_areas(conn=Depends(get_conn)):
     return [db.area_para_dict(r) for r in conn.execute("SELECT * FROM area ORDER BY id")]
 
+
+@api.get("/eventos")
+def listar_eventos(area_id: int, de: date, ate: date, conn=Depends(get_conn)):
+    rows = conn.execute(
+        "SELECT * FROM evento WHERE area_id = ? AND data BETWEEN ? AND ? ORDER BY data, id",
+        (area_id, de.isoformat(), ate.isoformat()),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _cabecalho(ini, fim):
+    return {"hoje": config.hoje().isoformat(), "inicio": ini.isoformat(), "fim": fim.isoformat()}
+
+
+@api.get("/calendario")
+def obter_calendario(area_id: int, ano: Optional[int] = None, conn=Depends(get_conn)):
+    ini, fim = intervalo(ano)
+    r = db.calendario(conn, area_id, ini, fim)
+    if r is None:
+        raise HTTPException(404, "Área não encontrada")
+    return {**_cabecalho(ini, fim), **r}
+
+
+@api.get("/calendarios")
+def obter_todos(ano: Optional[int] = None, conn=Depends(get_conn)):
+    ini, fim = intervalo(ano)
+    ids = [r["id"] for r in conn.execute("SELECT id FROM area ORDER BY id")]
+    return {**_cabecalho(ini, fim), "areas": [db.calendario(conn, i, ini, fim) for i in ids]}
+
+
+# ---------- Escrita (exige token; o token só identifica o dispositivo) ----------
 
 @api.post("/areas", status_code=201, dependencies=[Depends(escrita)])
 def criar_area(a: AreaIn, conn=Depends(get_conn)):
@@ -120,15 +151,6 @@ def remover_area(area_id: int, conn=Depends(get_conn)):
     conn.commit()
     if cur.rowcount == 0:
         raise HTTPException(404, "Área não encontrada")
-
-
-@api.get("/eventos", dependencies=[Depends(leitura)])
-def listar_eventos(area_id: int, de: date, ate: date, conn=Depends(get_conn)):
-    rows = conn.execute(
-        "SELECT * FROM evento WHERE area_id = ? AND data BETWEEN ? AND ? ORDER BY data, id",
-        (area_id, de.isoformat(), ate.isoformat()),
-    ).fetchall()
-    return [dict(r) for r in rows]
 
 
 @api.post("/eventos", status_code=201)
@@ -155,26 +177,6 @@ def remover_evento(evento_id: int, conn=Depends(get_conn)):
     checar_janela(date.fromisoformat(row["data"]))
     conn.execute("DELETE FROM evento WHERE id = ?", (evento_id,))
     conn.commit()
-
-
-def _cabecalho(ini, fim):
-    return {"hoje": config.hoje().isoformat(), "inicio": ini.isoformat(), "fim": fim.isoformat()}
-
-
-@api.get("/calendario", dependencies=[Depends(leitura)])
-def obter_calendario(area_id: int, ano: Optional[int] = None, conn=Depends(get_conn)):
-    ini, fim = intervalo(ano)
-    r = db.calendario(conn, area_id, ini, fim)
-    if r is None:
-        raise HTTPException(404, "Área não encontrada")
-    return {**_cabecalho(ini, fim), **r}
-
-
-@api.get("/calendarios", dependencies=[Depends(leitura)])
-def obter_todos(ano: Optional[int] = None, conn=Depends(get_conn)):
-    ini, fim = intervalo(ano)
-    ids = [r["id"] for r in conn.execute("SELECT id FROM area ORDER BY id")]
-    return {**_cabecalho(ini, fim), "areas": [db.calendario(conn, i, ini, fim) for i in ids]}
 
 
 app.include_router(api)

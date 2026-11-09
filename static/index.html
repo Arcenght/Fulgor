@@ -46,12 +46,13 @@ label{display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--mut)
   <header>
     <h1>Hábitos</h1>
     <select id="ano" aria-label="Período"></select>
-    <button id="sair" type="button">Trocar token</button>
+    <button id="sair" type="button">Token de escrita</button>
   </header>
 
+  <!-- O token só é necessário para registrar/remover e identifica o dispositivo. A leitura é aberta. -->
   <form id="login" hidden>
-    <label>Token deste dispositivo <input id="tk" type="password" autocomplete="off" required style="width:22em;max-width:100%"></label>
-    <button class="primary" type="submit">Entrar</button>
+    <label>Token deste dispositivo (para registrar) <input id="tk" type="password" autocomplete="off" required style="width:22em;max-width:100%"></label>
+    <button class="primary" type="submit">Salvar</button>
   </form>
 
   <form id="f">
@@ -102,7 +103,7 @@ async function api(path, opts = {}) {
 
 const erro = m => { const e = $('#err'); e.textContent = m || ''; e.hidden = !m; };
 function falha(e) {
-  if (e.status === 401) $('#login').hidden = false;
+  if (e.status === 401) $('#login').hidden = false;   // só escrita pede token
   erro(e.message);
 }
 
@@ -151,7 +152,9 @@ async function detalhe(a, data, box) {
     const ev = await api(`/api/eventos?area_id=${a.id}&de=${data}&ate=${data}`);
     if (!ev.length) { box.append(el('div', { class: 'mut', text: 'Nenhum registro neste dia.' })); return; }
     for (const e of ev) {
-      const txt = (a.unidade ? `${fmtN(e.valor)} ${a.unidade}` : 'feito') + (e.nota ? `: ${e.nota}` : '');
+      const txt = (a.unidade ? `${fmtN(e.valor)} ${a.unidade}` : 'feito')
+        + (e.nota ? `: ${e.nota}` : '')
+        + (e.origem ? ` · ${e.origem}` : '');
       box.append(el('div', { class: 'ev' },
         el('span', { text: txt }),
         el('button', { type: 'button', text: 'Remover', onclick: () => remover(e.id) })));
@@ -226,7 +229,7 @@ async function load() {
   try {
     const r = await api('/api/calendarios' + (ano ? `?ano=${ano}` : ''));
     cals = r.areas; hoje = r.hoje; janela = { inicio: r.inicio, fim: r.fim };
-    erro(''); $('#login').hidden = true;
+    erro('');
     const d = $('#data');
     d.max = hoje;
     if (!d.value || d.value > hoje) d.value = hoje;
@@ -253,12 +256,13 @@ $('#login').addEventListener('submit', ev => {
   ev.preventDefault();
   localStorage.setItem(TOKEN_KEY, $('#tk').value.trim());
   $('#tk').value = '';
-  load();
+  $('#login').hidden = true;
+  erro('');
 });
 $('#sair').addEventListener('click', () => {
-  localStorage.removeItem(TOKEN_KEY);
-  cals = []; render();
-  $('#login').hidden = false; $('#tk').focus();
+  // Só mexe no token de escrita; o calendário continua visível.
+  $('#login').hidden = !$('#login').hidden;
+  if (!$('#login').hidden) $('#tk').focus();
 });
 $('#f').addEventListener('submit', async ev => {
   ev.preventDefault();
